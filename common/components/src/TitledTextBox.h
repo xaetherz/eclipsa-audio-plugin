@@ -16,6 +16,12 @@
 
 #pragma once
 
+#ifdef _WIN32
+#include <errno.h>
+#else
+#include <sys/errno.h>
+#endif
+
 #include "../components.h"
 
 class TitledTextBox : public juce::Component {

@@ -61,8 +61,8 @@ class AmbisonicsVisualizer : public juce::Component, public juce::Timer {
     // convert 2D cartesian to 3D Cartesian
     // depends on view
     // uses the equation of a unit sphere
-    float calculateSurfacePosition(const std::pair<float, float>& point,
-                                   const VisualizerView& view);
+    void calculateSurfacePosition(const std::pair<float, float>& point,
+                                  const VisualizerView& view);
 
     // returns the 3rd coordinates on the surface of a unit sphere
     float unitSphere(const float& x, const float& y);

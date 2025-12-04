@@ -15,7 +15,11 @@
  */
 
 #pragma once
+#ifdef _WIN32
+#include <errno.h>
+#else
 #include <sys/errno.h>
+#endif
 
 #include "../components.h"
 #include "Icons.h"

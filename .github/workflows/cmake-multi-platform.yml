@@ -140,6 +140,38 @@ jobs:
           echo "CLEAN_BUILD is true, removing entire build directory."
           if [ -d "build" ]; then rm -rf build; fi
 
+      # --- FFmpeg (macOS) ---
+      - name: Install FFmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          echo "Installing FFmpeg via Homebrew..."
+          brew update
+          brew install ffmpeg
+          
+          echo "Verifying installation:"
+          ffmpeg -version
+          ffprobe -version
+          
+          echo "FFmpeg location:"
+          which ffmpeg
+          which ffprobe
+
+      # --- FFmpeg (Windows) ---
+      - name: Install FFmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Write-Host "Installing FFmpeg via Chocolatey..."
+          choco install ffmpeg -y
+          
+          Write-Host "Verifying installation:"
+          ffmpeg -version
+          ffprobe -version
+          
+          Write-Host "FFmpeg location:"
+          where.exe ffmpeg
+          where.exe ffprobe
+
       # --- Formatting (macOS only for now) ---
       - name: Check Formatting
         if: runner.os == 'macOS'

@@ -15,8 +15,11 @@
 #include "IAMFExportUtil.h"
 
 #include <gpac/filters.h>
+#include <gpac/isomedia.h>
 #include <gpac/tools.h>
 #include <logger/logger.h>
+
+#include "gpac/tools.h"
 
 namespace IAMFExportHelper {
 
@@ -158,91 +161,76 @@ void writeOPUSConfigMD(const int sampleRate, const int bitratePerChannel,
   opusConfig->set_allocated_opus_encoder_metadata(opusMD);
 }
 
-bool muxIAMF(const AudioElementRepository& aeRepo,
-             const MixPresentationRepository& mpRepo,
-             const FileExport& exportData) {
-  const juce::String inputAudioFile = exportData.getExportFile();
-  const juce::String inputVideoFile = exportData.getVideoSource();
-  const juce::String outputMuxdFile = exportData.getVideoExportFolder();
-
-  // Initialize GPAC library before creating session
-  GF_Err init_err = gf_sys_init(GF_MemTrackerNone, NULL);
-  if (init_err != GF_OK) {
-    LOG_ERROR(0, "IAMF Muxing: Failed to initialize GPAC system.");
+static bool validateMuxingPaths(const juce::String& inputAudioFile,
+                                const juce::String& inputVideoFile,
+                                const juce::String& outputMuxdFile) {
+  if (!FileExport::validateFilePath(
+          std::filesystem::path(inputAudioFile.toStdString()), true)) {
+    LOG_ERROR(0, std::string("IAMFMuxing: Invalid input audio file path ") +
+                     inputAudioFile.toStdString());
     return false;
   }
+  if (!FileExport::validateFilePath(
+          std::filesystem::path(inputVideoFile.toStdString()), true)) {
+    LOG_ERROR(0, std::string("IAMFMuxing: Invalid input video file path ") +
+                     inputVideoFile.toStdString());
+    return false;
+  }
+  if (!FileExport::validateFilePath(
+          std::filesystem::path(outputMuxdFile.toStdString()), false)) {
+    LOG_ERROR(0, std::string("IAMFMuxing: Invalid output muxed file path ") +
+                     outputMuxdFile.toStdString());
+    return false;
+  }
+  return true;
+}
+
+// Writes IAMF audio to an MP4 file using a GPAC filter session
+static bool muxIAMFAudio(const juce::String& inputAudioFile,
+                         const juce::String& outputMp4File) {
+#ifdef DEBUG
+  gf_log_set_tool_level(GF_LOG_FILTER, GF_LOG_INFO);
+  gf_log_set_tool_level(GF_LOG_CONTAINER, GF_LOG_INFO);
+#endif
 
   GF_Err gf_err = GF_OK;
   GF_FilterSession* session = gf_fs_new_defaults(GF_FilterSessionFlags(0));
   if (session == NULL) {
-    LOG_INFO(0, "IAMF Muxing: Failed to create gpac session.");
+    LOG_INFO(0, "IAMF Audio Muxing: Failed to create gpac session.");
     gf_fs_del(session);
     return false;
   }
 
-  // Construct a filter for input audio.
+  // Filter for input audio
   GF_Filter* src_audio = gf_fs_load_source(session, inputAudioFile.toRawUTF8(),
                                            NULL, NULL, &gf_err);
   if (gf_err != GF_OK) {
-    std::string errStr = "IAMF Muxing: Failed to load audio file: " +
-                         inputAudioFile.toStdString();
-    LOG_ERROR(0, errStr);
-    return false;
-  }
-
-  // Filter for input video.
-  GF_Filter* src_video = gf_fs_load_source(session, inputVideoFile.toRawUTF8(),
-                                           NULL, NULL, &gf_err);
-  if (gf_err != GF_OK) {
-    std::string errStr = "IAMF Muxing: Failed to load video file: " +
-                         inputVideoFile.toStdString();
-    LOG_ERROR(0, errStr);
+    LOG_ERROR(0, "IAMF Audio Muxing: Failed to load audio file " +
+                     inputAudioFile.toStdString() +
+                     " with error: " + std::string(gf_error_to_string(gf_err)));
     gf_fs_del(session);
     return false;
   }
 
-  // Filter for output mp4.
-  GF_Filter* dest_filter = gf_fs_load_destination(
-      session, outputMuxdFile.toRawUTF8(), NULL, NULL, &gf_err);
-  if (gf_err != GF_OK) {
-    std::string errStr = "IAMF Muxing: Failed to load output destination: " +
-                         outputMuxdFile.toStdString();
-    LOG_ERROR(0, errStr);
-    gf_fs_del(session);
-    return false;
-  }
-
-  // Reframer for audio stream.
+  // Reframer for audio stream
   GF_Filter* reframer_filter = gf_fs_load_filter(session, "rfav1", &gf_err);
   if (gf_err != GF_OK) {
-    LOG_ERROR(0, "IAMF Muxing: Failed to load reframer filter.");
+    LOG_ERROR(0, "IAMF Audio Muxing: Failed to load reframer filter.");
     gf_fs_del(session);
     return false;
   }
 
-  // Filter for muxing audio and video.
-  GF_Filter* mux_filter = gf_fs_load_filter(session, "mp4mx", &gf_err);
+  // Filter for output mp4
+  GF_Filter* dest_filter = gf_fs_load_destination(
+      session, outputMp4File.toRawUTF8(), NULL, NULL, &gf_err);
   if (gf_err != GF_OK) {
-    LOG_ERROR(0, "IAMF Muxing: Failed to load muxing filter.");
+    LOG_ERROR(0, "IAMF Audio Muxing: Failed to load output file filter.");
     gf_fs_del(session);
     return false;
   }
-
-  // Filter for removing audio from video
-  GF_Filter* audio_remover =
-      gf_fs_load_filter(session, "mp4dmx:tkid=video", &gf_err);
-  if (gf_err != GF_OK) {
-    LOG_ERROR(0, "IAMF Muxing: Failed to load audio remover filter.");
-    gf_fs_del(session);
-    return false;
-  }
-  // Pass the video file through the audio removal filter before muxing
-  gf_filter_set_source(audio_remover, src_video, NULL);
-  gf_filter_set_source(mux_filter, audio_remover, NULL);
 
   gf_filter_set_source(reframer_filter, src_audio, NULL);
-  gf_filter_set_source(mux_filter, reframer_filter, NULL);
-  gf_filter_set_source(dest_filter, mux_filter, NULL);
+  gf_filter_set_source(dest_filter, reframer_filter, NULL);
 
   gf_err = gf_fs_run(session);
 
@@ -254,6 +242,196 @@ bool muxIAMF(const AudioElementRepository& aeRepo,
   }
 
   gf_fs_del(session);
+
+  if (gf_err != GF_OK) {
+    LOG_ERROR(0, "IAMF Audio Muxing: Failed with error: " +
+                     std::string(gf_error_to_string(gf_err)));
+    return false;
+  }
+  return true;
+}
+
+// Writes video to an existing MP4 file using GPAC ISO media APIs
+static bool muxVideo(const juce::String& inputVideoFile,
+                     const juce::String& outputMuxedFile) {
+#ifdef DEBUG
+  gf_log_set_tool_level(GF_LOG_CORE, GF_LOG_INFO);
+  gf_log_set_tool_level(GF_LOG_CONTAINER, GF_LOG_INFO);
+#endif
+
+  GF_Err gf_err = GF_OK;
+
+  // Open input video file for reading
+  GF_ISOFile* src_video =
+      gf_isom_open(inputVideoFile.toRawUTF8(), GF_ISOM_OPEN_READ, NULL);
+  if (!src_video) {
+    LOG_ERROR(0, "Video Muxing: Failed to open input video file " +
+                     inputVideoFile.toStdString() + " for reading.");
+    return false;
+  }
+
+  // Get the first video track from the source file
+  u32 src_track_count = gf_isom_get_track_count(src_video);
+  u32 src_video_track = 0;
+  for (u32 i = 1; i <= src_track_count; i++) {
+    u32 media_type = gf_isom_get_media_type(src_video, i);
+    if (media_type == GF_ISOM_MEDIA_VISUAL) {
+      src_video_track = i;
+      break;
+    }
+  }
+
+  if (src_video_track == 0) {
+    LOG_ERROR(0, "Video Muxing: No video track found in input file.");
+    gf_isom_close(src_video);
+    return false;
+  }
+
+  // Open the existing MP4 file (with audio) for editing
+  GF_ISOFile* dst_file =
+      gf_isom_open(outputMuxedFile.toRawUTF8(), GF_ISOM_OPEN_EDIT, NULL);
+  if (!dst_file) {
+    LOG_ERROR(0, "Video Muxing: Failed to open output file " +
+                     outputMuxedFile.toStdString() + " for editing.");
+    gf_isom_close(src_video);
+    return false;
+  }
+
+  // Get track count before adding video for verification later
+  u32 tracks_before = gf_isom_get_track_count(dst_file);
+
+  // Clone the video track structure (this only clones metadata, not samples)
+  u32 dst_track = 0;
+  gf_err = gf_isom_clone_track(src_video, src_video_track, dst_file,
+                               GF_ISOTrackCloneFlags(0), &dst_track);
+  if (gf_err != GF_OK) {
+    LOG_ERROR(0, "Video Muxing: Failed to clone video track: " +
+                     std::string(gf_error_to_string(gf_err)));
+    gf_isom_close(dst_file);
+    gf_isom_close(src_video);
+    return false;
+  }
+
+  // Now manually copy all samples from the source track to the destination
+  // track
+  u32 sample_count = gf_isom_get_sample_count(src_video, src_video_track);
+  for (u32 i = 1; i <= sample_count; i++) {
+    u32 sample_desc_index = 0;
+    GF_ISOSample* sample =
+        gf_isom_get_sample(src_video, src_video_track, i, &sample_desc_index);
+    if (!sample) {
+      LOG_ERROR(0, "Video Muxing: Failed to get sample " + std::to_string(i) +
+                       " from source track");
+      gf_isom_close(dst_file);
+      gf_isom_close(src_video);
+      return false;
+    }
+
+    // Add the sample to the destination track
+    gf_err = gf_isom_add_sample(dst_file, dst_track, sample_desc_index, sample);
+    gf_isom_sample_del(&sample);
+
+    if (gf_err != GF_OK) {
+      LOG_ERROR(0, "Video Muxing: Failed to add sample " + std::to_string(i) +
+                       " to destination track: " +
+                       std::string(gf_error_to_string(gf_err)));
+      gf_isom_close(dst_file);
+      gf_isom_close(src_video);
+      return false;
+    }
+  }
+
+  // Close source file
+  gf_isom_close(src_video);
+
+  // Set storage mode to interleaved to mimic CLI behaviour
+  gf_err = gf_isom_set_storage_mode(dst_file, GF_ISOM_STORE_INTERLEAVED);
+  if (gf_err != GF_OK) {
+    LOG_ERROR(0, "Video Muxing: Failed to set storage mode: " +
+                     std::string(gf_error_to_string(gf_err)));
+    gf_isom_close(dst_file);
+    return false;
+  }
+
+  // Set final output filename (required for edit mode)
+  // Create a temporary filename for the edited output
+  juce::String tempOutputFile = outputMuxedFile + ".muxed";
+  gf_err = gf_isom_set_final_name(
+      dst_file, const_cast<char*>(tempOutputFile.toRawUTF8()));
+  if (gf_err != GF_OK) {
+    LOG_ERROR(0, "Video Muxing: Failed to set final name: " +
+                     std::string(gf_error_to_string(gf_err)));
+    gf_isom_close(dst_file);
+    return false;
+  }
+
+  // Close destination file (this writes the changes to the new filename)
+  gf_err = gf_isom_close(dst_file);
+  if (gf_err != GF_OK) {
+    LOG_ERROR(0, "Video Muxing: Failed to close output file: " +
+                     std::string(gf_error_to_string(gf_err)));
+    return false;
+  }
+
+  // Replace the original file with the new file
+  std::remove(outputMuxedFile.toRawUTF8());
+  if (std::rename(tempOutputFile.toRawUTF8(), outputMuxedFile.toRawUTF8()) !=
+      0) {
+    LOG_ERROR(0, "Video Muxing: Failed to rename output file, error: " +
+                     std::string(strerror(errno)));
+    return false;
+  }
+
+  // Verify by reopening and checking track count
+  GF_ISOFile* verify_file =
+      gf_isom_open(outputMuxedFile.toRawUTF8(), GF_ISOM_OPEN_READ, NULL);
+  if (!verify_file) {
+    LOG_ERROR(0, "Video Muxing: Failed to reopen file for verification.");
+    return false;
+  }
+
+  u32 tracks_after = gf_isom_get_track_count(verify_file);
+  gf_isom_close(verify_file);
+
+  if (tracks_after != tracks_before + 1) {
+    LOG_ERROR(0, "Video Muxing: Track count verification failed. Expected " +
+                     std::to_string(tracks_before + 1) + " tracks, got " +
+                     std::to_string(tracks_after));
+    return false;
+  }
+
+  return true;
+}
+
+bool muxIAMF(const FileExport& exportData) {
+  const juce::String inputAudioFile = exportData.getExportFile();
+  const juce::String inputVideoFile = exportData.getVideoSource();
+  const juce::String outputMuxdFile = exportData.getVideoExportFolder();
+
+  if (!validateMuxingPaths(inputAudioFile, inputVideoFile, outputMuxdFile)) {
+    LOG_ERROR(0, "IAMF Muxing: One or more file paths are invalid.");
+    return false;
+  }
+
+  // Initialize GPAC library before creating session
+  GF_Err init_err = gf_sys_init(GF_MemTrackerNone, NULL);
+  if (init_err != GF_OK) {
+    LOG_ERROR(0, "IAMF Muxing: Failed to initialize GPAC system.");
+    return false;
+  }
+
+  if (!muxIAMFAudio(inputAudioFile, outputMuxdFile)) {
+    LOG_ERROR(0, "IAMF Muxing: Failed to mux IAMF audio into MP4.");
+    gf_sys_close();
+    return false;
+  }
+  if (!muxVideo(inputVideoFile, outputMuxdFile)) {
+    LOG_ERROR(0, "IAMF Muxing: Failed to mux video into MP4.");
+    gf_sys_close();
+    return false;
+  }
+
+  gf_sys_close();
   return true;
 }
 }  // namespace IAMFExportHelper

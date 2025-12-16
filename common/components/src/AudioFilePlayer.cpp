@@ -232,6 +232,7 @@ void AudioFilePlayer::resized() {
 }
 
 void AudioFilePlayer::update() {
+  std::lock_guard<std::mutex> lock(pbeMutex_);
   if (playbackEngine_) {
     const IAMFFileReader::StreamData kData = playbackEngine_->getStreamData();
     const float kDuration_s =
@@ -265,9 +266,18 @@ void AudioFilePlayer::valueTreePropertyChanged(
     triggerAsyncUpdate();
   } else if (property == FilePlayback::kPlaybackFile) {
     attemptCreatePlaybackEngine();
-  } else if (property == FileExport::kExportCompleted &&
-             fer_.get().getExportCompleted()) {
-    attemptCreatePlaybackEngine();
+  } else if (property == FileExport::kExportCompleted) {
+    // When this property is false a new export is starting, so we want to
+    // destroy the player and wait until export is complete.
+    // When this property is true we want to attempt to create the playback
+    // engine again.
+    if (fer_.get().getExportCompleted()) {
+      auto safeThis = juce::Component::SafePointer<AudioFilePlayer>(this);
+      juce::MessageManager::callAsync(
+          [safeThis]() { safeThis->attemptCreatePlaybackEngine(); });
+    } else {
+      cancelCreatePlaybackEngine();
+    }
   }
 }
 
@@ -293,61 +303,85 @@ void AudioFilePlayer::updateComponentVisibility() {
   if (spinner_) spinner_->setVisible(kBuffering);
 }
 
-void AudioFilePlayer::attemptCreatePlaybackEngine() {
-  auto playbackState = fer_.get();
-  const std::filesystem::path kFileToLoad(
-      playbackState.getExportFile().toStdString());
+void AudioFilePlayer::cancelCreatePlaybackEngine() {
+  isBeingDestroyed_ = true;
+  if (playbackEngineLoaderThread_.joinable()) {
+    playbackEngineLoaderThread_.join();
+  }
+  // Wait for async callback to complete
+  std::unique_lock<std::mutex> lock(pbeMutex_);
+  pbeCv_.wait(lock, [this] { return !isLoadingPlaybackEngine_; });
+  isBeingDestroyed_ = false;
+}
 
+void AudioFilePlayer::attemptCreatePlaybackEngine() {
+  cancelCreatePlaybackEngine();
+
+  // If the file doesn't exist or it's a new file, we set the player to a
+  // stopped state
+  auto fe = fer_.get();
+  const std::filesystem::path kFileToLoad(fe.getExportFile().toStdString());
   if (kFileToLoad.empty() || kFileToLoad.extension() != ".iamf" ||
       !std::filesystem::exists(kFileToLoad)) {
+    auto playbackState = fpbr_.get();
+    playbackState.setPlayState(FilePlayback::kStop);
+    fpbr_.update(playbackState);
     return;
   }
+
+  auto fpb = fpbr_.get();
+  fpb.setPlayState(FilePlayback::kBuffering);
+  fpbr_.update(fpb);
+
   createPlaybackEngine(kFileToLoad);
 }
 
 void AudioFilePlayer::createPlaybackEngine(
     const std::filesystem::path iamfPath) {
-  // Join any existing thread before starting a new one
-  isBeingDestroyed_ = true;
-  if (playbackEngineLoaderThread_.joinable()) {
-    playbackEngineLoaderThread_.join();
-  }
-  isBeingDestroyed_ = false;
-
-  auto playbackState = fpbr_.get();
-  playbackState.setPlayState(FilePlayback::kBuffering);
-  fpbr_.update(playbackState);
-
   const juce::String kDevice = fpbr_.get().getPlaybackDevice();
-
-  if (playbackEngine_) {
-    playbackEngine_->stop();
-  }
-
   playbackEngineLoaderThread_ = std::thread([this, iamfPath, kDevice]() {
+    isLoadingPlaybackEngine_ = true;
+
     IAMFPlaybackDevice::Result res = IAMFPlaybackDevice::create(
         iamfPath, kDevice, isBeingDestroyed_, fpbr_, deviceManager_);
 
     auto safeThis = juce::Component::SafePointer<AudioFilePlayer>(this);
+
+    if (isBeingDestroyed_) {
+      isLoadingPlaybackEngine_ = false;
+      return;
+    }
     juce::MessageManager::callAsync(
         [safeThis, device = res.device.release(), error = res.error]() {
-          if (safeThis) {
+          if (safeThis && !safeThis->isBeingDestroyed_) {
             safeThis->onPlaybackEngineCreated(IAMFPlaybackDevice::Result{
                 std::unique_ptr<IAMFPlaybackDevice>(device), error});
+          } else {
+            delete device;
+          }
+
+          // Always reset the loading flag and notify waiters
+          if (safeThis) {
+            std::lock_guard<std::mutex> lock(safeThis->pbeMutex_);
+            safeThis->isLoadingPlaybackEngine_ = false;
+            safeThis->pbeCv_.notify_all();
           }
         });
   });
 }
 
 void AudioFilePlayer::onPlaybackEngineCreated(IAMFPlaybackDevice::Result res) {
+  std::lock_guard<std::mutex> lock(pbeMutex_);
   if (!res.device && res.error == IAMFPlaybackDevice::Error::kInvalidIAMFFile) {
     // Failed to create playback engine - reset state to disabled
     playbackEngine_ = nullptr;
     auto fpb = fpbr_.get();
     fpb.setPlayState(FilePlayback::kDisabled);
     fpbr_.update(fpb);
-  } else if (res.error == IAMFPlaybackDevice::kEarlyAbortRequested) {
+  } else if (res.error == IAMFPlaybackDevice::kEarlyAbortRequested ||
+             isBeingDestroyed_) {
     // Do nothing - destruction was requested
+    playbackEngine_ = nullptr;
   } else {
     playbackEngine_ = std::move(res.device);
     // Update play state from buffering to ready

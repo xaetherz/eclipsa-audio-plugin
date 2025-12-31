@@ -14,12 +14,6 @@
 
 #include "AudioElementPluginProcessor.h"
 
-#ifdef _WIN32
-// Windows doesn't need unistd.h - functionality is in io.h if needed
-#else
-#include <unistd.h>
-#endif
-
 #include <memory>
 
 #include "AudioElementPluginEditor.h"
@@ -32,6 +26,13 @@
 #include "processors/panner/Panner3DProcessor.h"
 #include "processors/routing/RoutingProcessor.h"
 #include "substream_rdr/substream_rdr_utils/Speakers.h"
+
+#ifdef _WIN32
+// Windows doesn't need unistd.h - functionality is in io.h if needed
+// #include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 int AudioElementPluginProcessor::instanceId_ = 0;
 
@@ -51,6 +52,9 @@ AudioElementPluginProcessor::AudioElementPluginProcessor()
       syncClient_(&audioElementSpatialLayoutRepository_, 2134),
       automationParametersTreeState(*this),
       trackName_("") {
+#ifdef WIN32
+  LoadWindowsDependencies();
+#endif
   elevationListener_.setListeners(&automationParametersTreeState,
                                   &audioElementSpatialLayoutRepository_);
 

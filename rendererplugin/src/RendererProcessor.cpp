@@ -27,6 +27,7 @@
 #include "processors/processor_base/ProcessorBase.h"
 #include "substream_rdr/substream_rdr_utils/Speakers.h"
 
+
 //==============================================================================
 RendererProcessor::RendererProcessor()
     // Logic Pro optimized builds: use host-wide layout
@@ -51,6 +52,9 @@ RendererProcessor::RendererProcessor()
       activeMixPresentationRepository_(getTreeWithId(kActiveMixKey)),
       filePlaybackRepository_(getTreeWithId(kFilePlaybackKey)),
       isRealtime_(true) {
+#ifdef WIN32
+  LoadWindowsDependencies();
+#endif
   // Initialize Logger
   Logger::getInstance().init("EclipsaRenderer");
 

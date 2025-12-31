@@ -16,6 +16,15 @@
 
 #pragma once
 
+// Windows headers MUST come before JUCE to avoid macro pollution
+#ifdef WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+// Undefine Windows macros that conflict with JUCE
+#undef Notification
+#endif
+
 #include <juce_audio_utils/juce_audio_utils.h>
 
 // Build configuration for Logic Pro compatibility
@@ -126,4 +135,20 @@ class ProcessorBase : public juce::AudioProcessor {
   void changeProgramName(int index, const juce::String& newName) override {
     juce::ignoreUnused(index, newName);
   }
+
+#ifdef WIN32
+  static void LoadWindowsDependencies() {
+    const auto pluginFile = juce::File::getSpecialLocation(
+        juce::File::SpecialLocationType::currentExecutableFile);
+    const auto pluginDirectory = pluginFile.getParentDirectory();
+
+    auto dllFiles =
+        pluginDirectory.findChildFiles(juce::File::findFiles, false, "*.dll");
+
+    for (const auto& dllFile : dllFiles) {
+      std::string dllPath = dllFile.getFullPathName().toStdString();
+      LoadLibraryA(dllPath.c_str());
+    }
+  }
+#endif
 };

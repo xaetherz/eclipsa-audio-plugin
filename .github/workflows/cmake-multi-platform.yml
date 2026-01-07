@@ -330,3 +330,13 @@ jobs:
           else
              echo "Log file not found."
           fi
+
+# --- Save the Plugins ---
+      - name: Upload Finished Plugins
+        uses: actions/upload-artifact@v4
+        with:
+          name: Eclipsa-Plugins-${{ runner.os }}
+          path: |
+            build/**/*.vst3
+            build/**/*.component
+            build/**/*.aaxplugin

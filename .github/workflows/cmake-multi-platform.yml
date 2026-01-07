@@ -331,12 +331,29 @@ jobs:
              echo "Log file not found."
           fi
 
-# --- Save the Plugins ---
+# --- Test ---
+      - name: Test
+        working-directory: ${{ github.workspace }}/build
+        shell: bash
+        run: ctest -C ${{ env.BUILD_TYPE }} --output-on-failure
+
+      # --- NEW: Debug Binary Locations ---
+      - name: Locate Binaries (Debug)
+        shell: bash
+        run: |
+          echo "Listing all plugin binaries found in build directory:"
+          find build -name "*.vst3" -o -name "*.component" -o -name "*.aaxplugin"
+
+      # --- Save the Plugins ---
       - name: Upload Finished Plugins
         uses: actions/upload-artifact@v4
         with:
           name: Eclipsa-Plugins-${{ runner.os }}
+          # Using a more robust globbing pattern to catch MSVC's deep folder structure
           path: |
             build/**/*.vst3
             build/**/*.component
             build/**/*.aaxplugin
+          if-no-files-found: error
+
+
